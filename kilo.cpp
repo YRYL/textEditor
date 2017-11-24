@@ -13,6 +13,7 @@
 #endif
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <termios.h>
@@ -35,6 +36,8 @@ using namespace std;
 #define KILO_TAB 			"    "
 
 #define KILO_STATUS_SIZE 	80
+
+#define NO_FILE_NAME 		"[No Name]"
 
 enum EditorKey
 {
@@ -95,6 +98,12 @@ while(0)
 // Char macros
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+/**************************************************************************
+*                              Prototypes                                 *
+**************************************************************************/
+
+void editorSetStatusMsg(const char* fmt, ...);
+
 
 /**************************************************************************
 *                                 Data                                    *
@@ -110,6 +119,7 @@ struct EditorConfig
 	int numRows;
 	string* rows;
 	string* renderRows;
+	bool dirty;
 	string filename;
 	char statusMsg[KILO_STATUS_SIZE];
 	time_t statusMsgTime;
@@ -287,6 +297,41 @@ int getWindowSize(int* rows, int* cols)
 *                                File i/o                                 *
 **************************************************************************/
 
+string editorRowsToString()
+{
+	string rowsStr;
+	for (int i = 0; i < config.numRows; ++i)
+	{
+		rowsStr.append(config.rows[i]);
+		rowsStr.append("\n");
+	}
+	return rowsStr;
+}
+
+void editorSave()
+{
+	if (config.filename == NO_FILE_NAME)
+		return;
+
+	string content = editorRowsToString();
+	int fd = open(config.filename.c_str(), O_RDWR | O_CREAT, 0644);
+	if (fd != -1)
+	{
+		if(ftruncate(fd, content.length()) != -1)
+		{
+			if(write(fd, content.c_str(), content.length()) == static_cast<int>(content.length()))
+			{
+				close(fd);
+				config.dirty = false;
+				editorSetStatusMsg("%d bytes were written to disk", content.length());
+				return;
+			}
+		}
+		close(fd);	
+	}
+	editorSetStatusMsg("Can't save! I/O error: %s", strerror(errno));
+}
+
 void reallocStringArray(string*& array, int currSize, int newSize)
 {
 	string* tmpRows = new string[newSize];
@@ -352,6 +397,7 @@ void editorAppendRow(const char* row, size_t len)
 	editorUpdateRow(config.numRows);
 
 	++config.numRows;
+	config.dirty = true;
 }
 
 void editorRowInsertChar(uint rowIdx, int at, const char c)
@@ -360,6 +406,8 @@ void editorRowInsertChar(uint rowIdx, int at, const char c)
 		at = config.rows[rowIdx].length();
 	config.rows[rowIdx].insert(at, 1, c);
 	editorUpdateRow(rowIdx);
+
+	config.dirty = true;
 }
 
 void editorOpen(char* filename)
@@ -384,6 +432,7 @@ void editorOpen(char* filename)
 	
 	free(line);
 	fclose(fp);
+	config.dirty = false;
 }
 
 /**************************************************************************
@@ -468,6 +517,10 @@ void editorProcessKeypress()
 		case CTRL_KEY('q'):
 			CLEAR_SCREEN();
 			exit(0);
+			break;
+
+		case CTRL_KEY('s'):
+			editorSave();
 			break;
 
 		case HOME_KEY:
@@ -603,8 +656,8 @@ void editorDrawStatusBar(string& ab)
 	char status[KILO_STATUS_SIZE], rstatus[KILO_STATUS_SIZE];
 	memset(status, 0, KILO_STATUS_SIZE);
 	memset(rstatus, 0, KILO_STATUS_SIZE);
-	int len = snprintf(status, KILO_STATUS_SIZE, "%.20s - %d lines",
-					   config.filename.c_str(), config.numRows);
+	int len = snprintf(status, KILO_STATUS_SIZE, "%.20s - %d lines %s",
+					   config.filename.c_str(), config.numRows, config.dirty ? "(modified)" : "");
 	int rlen = snprintf(rstatus, KILO_STATUS_SIZE, "%d/%d", config.cy + 1, config.numRows);
 	if (len > config.screenCols)
 		len = config.screenCols;
@@ -678,7 +731,8 @@ void initEditor()
 	config.numRows  = 0;
 	config.rowOff   = 0;
 	config.colOff   = 0;
-	config.filename = "[No Name]";
+	config.dirty	= false;
+	config.filename = NO_FILE_NAME;
 	memset(config.statusMsg, 0, KILO_STATUS_SIZE);
 	config.statusMsgTime = 0;
 
@@ -695,7 +749,7 @@ int main(int argc, char* argv[])
 		editorOpen(argv[1]);
 	}
 
-	editorSetStatusMsg("HELP: Ctrl-Q = quit");
+	editorSetStatusMsg("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
 	while (true)
 	{
